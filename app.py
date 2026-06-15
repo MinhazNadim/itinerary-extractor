@@ -3,26 +3,33 @@ import pandas as pd
 import requests
 import json
 import io
-import tempfile
-from typing import List, Dict, Any
-import google.generativeai as genai
+from typing import Dict, List, Any
+from google import genai
 import pdfplumber
 from bs4 import BeautifulSoup
-from tqdm import tqdm
 import time
 
 # ------------------ Page Config ------------------
 st.set_page_config(page_title="Itinerary Extractor", layout="wide")
-st.title("📄 AI Itinerary Extractor (Gemini 1.5 Flash)")
+st.title("📄 AI Itinerary Extractor (Gemini 2.0 Flash)")
 st.markdown("Upload an Excel file with columns: **Country, Client name, Website, Source URL/Path**")
 
 # ------------------ Helper Functions ------------------
 def extract_text_from_url(url: str) -> str:
-    """Download and extract text from a URL (HTML or PDF)."""
+    """Download and extract text from a URL (HTML or PDF) with browser headers."""
     try:
-        response = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        response = requests.get(url, timeout=30, headers=headers)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").lower()
+        
         if "application/pdf" in content_type or url.lower().endswith(".pdf"):
             # PDF
             with pdfplumber.open(io.BytesIO(response.content)) as pdf:
@@ -37,12 +44,11 @@ def extract_text_from_url(url: str) -> str:
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-def call_gemini(api_key: str, prompt: str, document_text: str) -> Dict[str, Any]:
-    """Send document text + prompt to Gemini and return parsed JSON."""
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+def call_gemini(api_key: str, document_text: str) -> Dict[str, Any]:
+    """Send document text to Gemini 2.0 Flash and return parsed JSON."""
+    client = genai.Client(api_key=api_key)
     
-    full_prompt = f"""
+    prompt = f"""
 You are an expert travel itinerary parser. Extract the following information from the document below.
 Return ONLY valid JSON (no extra text) in the following structure:
 
@@ -64,10 +70,13 @@ Return ONLY valid JSON (no extra text) in the following structure:
 If any category is not found, return an empty list for that key.
 
 DOCUMENT:
-{document_text[:70000]}  # Gemini 1.5 Flash can handle up to ~1M tokens, but keep safe
+{document_text[:70000]}
 """
     try:
-        response = model.generate_content(full_prompt)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
         raw = response.text.strip()
         # Remove markdown code fences if present
         if raw.startswith("```json"):
@@ -100,7 +109,7 @@ def process_row(row: pd.Series, api_key: str, progress_bar, status_text) -> Dict
         st.warning(f"Failed to fetch {source}: {text}")
         return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
     
-    extracted = call_gemini(api_key, "", text)  # prompt is inside call_gemini
+    extracted = call_gemini(api_key, text)
     # Add metadata to each item
     for item in extracted["itinerary"]:
         item["Country"] = country
@@ -121,7 +130,8 @@ def process_row(row: pd.Series, api_key: str, progress_bar, status_text) -> Dict
     return extracted
 
 # ------------------ Main App ------------------
-api_key = st.text_input("🔑 Enter your Google Gemini API Key", type="password", help="Get one free at https://aistudio.google.com/apikey")
+api_key = st.text_input("🔑 Enter your Google Gemini API Key", type="password", 
+                        help="Get one free at https://aistudio.google.com/apikey")
 uploaded_file = st.file_uploader("📂 Upload Excel file", type=["xlsx", "xls"])
 
 if api_key and uploaded_file:
@@ -154,6 +164,7 @@ if api_key and uploaded_file:
         # Create Excel with four sheets
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            # Only create sheet if there is data, otherwise empty placeholder
             pd.DataFrame(all_itinerary).to_excel(writer, sheet_name="Itinerary", index=False)
             pd.DataFrame(all_restaurants).to_excel(writer, sheet_name="Restaurant", index=False)
             pd.DataFrame(all_hotels).to_excel(writer, sheet_name="Hotel", index=False)
