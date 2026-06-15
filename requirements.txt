@@ -1,0 +1,8 @@
+streamlit
+pandas
+openpyxl
+requests
+pdfplumber
+beautifulsoup4
+google-generativeai
+tqdm
