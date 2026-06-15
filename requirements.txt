@@ -4,5 +4,5 @@ openpyxl
 requests
 pdfplumber
 beautifulsoup4
-google-generativeai
+google-genai
 tqdm
