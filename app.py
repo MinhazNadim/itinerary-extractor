@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 # ------------------ Page Config ------------------
 st.set_page_config(page_title="Itinerary Extractor", layout="wide")
-st.title("📄 AI Itinerary Extractor (Groq - Llama 3.1 8B)")
+st.title("📄 AI Itinerary Extractor (Groq - English Output)")
 st.markdown("Upload an Excel file with columns: **Country, Client name, Website, Source URL/Path**")
 
 # ------------------ Helper Functions ------------------
@@ -45,11 +45,15 @@ def extract_text_from_url(url: str) -> str:
         return f"ERROR: {str(e)}"
 
 def call_groq_with_retry(api_key: str, document_text: str, max_retries: int = 3) -> Dict[str, Any]:
-    """Send document text to Groq (Llama 3.1 8B) with retry logic."""
+    """Send document text to Groq (Llama 3.1 8B) with English output."""
     client = Groq(api_key=api_key)
     
     prompt = f"""
-Analyze the travel itinerary document and extract structured data. Return ONLY valid JSON in this format:
+You are given a travel itinerary document (it may be in Chinese or another language). 
+Extract the structured data and output EVERYTHING in ENGLISH. 
+Translate any non-English text (city names, activity descriptions, hotel names, etc.) into English.
+
+Return ONLY valid JSON in this format:
 
 {{
   "itinerary": [{{"day": integer, "city": "string", "activity": "string"}}],
@@ -72,7 +76,6 @@ DOCUMENT:
                 response_format={"type": "json_object"}
             )
             raw = response.choices[0].message.content.strip()
-            # Clean markdown code fences if present
             if raw.startswith("```json"):
                 raw = raw[7:]
             if raw.startswith("```"):
@@ -116,14 +119,12 @@ def process_row(row: pd.Series, api_key: str, skip_on_quota: bool, progress_bar,
     
     extracted = call_groq_with_retry(api_key, text)
     
-    # Check if we hit quota and user wants to skip
     if skip_on_quota and not any(extracted.values()):
         st.info(f"⚠️ Skipping {client} due to quota limit. Check 'quota_skipped.txt'")
         with open("quota_skipped.txt", "a") as f:
             f.write(f"{client},{source}\n")
         return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
     
-    # Add metadata
     for item in extracted["itinerary"]:
         item.update({"Country": country, "Client name": client, "Website": website})
     for item in extracted["hotels"]:
@@ -163,7 +164,7 @@ if api_key and uploaded_file:
             all_restaurants.extend(extracted["restaurants"])
             all_attractions.extend(extracted["attractions"])
             progress_bar.progress((idx + 1) / len(df))
-            time.sleep(1)  # 1 second delay between rows
+            time.sleep(1)
         
         status_text.text("✅ Extraction complete! Building Excel...")
         
