@@ -6,16 +6,16 @@ import io
 import time
 import random
 from typing import Dict, List, Any
-from google import genai
-from google.genai import errors
+from groq import Groq
 import pdfplumber
 from bs4 import BeautifulSoup
 
 # ------------------ Page Config ------------------
 st.set_page_config(page_title="Itinerary Extractor", layout="wide")
-st.title("📄 AI Itinerary Extractor (Gemini 2.0 Flash)")
+st.title("📄 AI Itinerary Extractor (Groq - Llama 3.1 8B)")
 st.markdown("Upload an Excel file with columns: **Country, Client name, Website, Source URL/Path**")
 
+# ------------------ Helper Functions ------------------
 @st.cache_data
 def extract_text_from_url(url: str) -> str:
     """Download and extract text from a URL (HTML or PDF) with browser headers."""
@@ -44,11 +44,10 @@ def extract_text_from_url(url: str) -> str:
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-def call_gemini_with_retry(api_key: str, document_text: str, max_retries: int = 3) -> Dict[str, Any]:
-    """Send document text to Gemini with retry logic for 429 and 503 errors."""
-    client = genai.Client(api_key=api_key)
+def call_groq_with_retry(api_key: str, document_text: str, max_retries: int = 3) -> Dict[str, Any]:
+    """Send document text to Groq (Llama 3.1 8B) with retry logic."""
+    client = Groq(api_key=api_key)
     
-    # More concise prompt to save tokens
     prompt = f"""
 Analyze the travel itinerary document and extract structured data. Return ONLY valid JSON in this format:
 
@@ -61,17 +60,19 @@ Analyze the travel itinerary document and extract structured data. Return ONLY v
 
 If a category has no data, return an empty list [].
 
-DOCUMENT (truncated for length):
+DOCUMENT:
 {document_text[:20000]}
 """
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
+            response = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                response_format={"type": "json_object"}
             )
-            raw = response.text.strip()
-            # Clean markdown code fences
+            raw = response.choices[0].message.content.strip()
+            # Clean markdown code fences if present
             if raw.startswith("```json"):
                 raw = raw[7:]
             if raw.startswith("```"):
@@ -84,23 +85,19 @@ DOCUMENT (truncated for length):
                 if key not in data:
                     data[key] = []
             return data
-        except errors.ClientError as e:
+        except Exception as e:
             if "429" in str(e) or "503" in str(e):
                 if attempt < max_retries - 1:
-                    # Exponential backoff: 2^attempt seconds + jitter
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
                     st.warning(f"⚠️ Rate limit hit. Retrying in {wait_time:.1f} seconds... (Attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                     continue
                 else:
-                    st.error(f"Gemini API error after {max_retries} retries: {str(e)}")
+                    st.error(f"Groq API error after {max_retries} retries: {str(e)}")
                     return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
             else:
-                st.error(f"Gemini API error: {str(e)}")
+                st.error(f"Groq API error: {str(e)}")
                 return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
-        except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
-            return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
     
     return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
 
@@ -117,7 +114,7 @@ def process_row(row: pd.Series, api_key: str, skip_on_quota: bool, progress_bar,
         st.warning(f"Failed to fetch {source}: {text}")
         return {"itinerary": [], "hotels": [], "restaurants": [], "attractions": []}
     
-    extracted = call_gemini_with_retry(api_key, text)
+    extracted = call_groq_with_retry(api_key, text)
     
     # Check if we hit quota and user wants to skip
     if skip_on_quota and not any(extracted.values()):
@@ -139,10 +136,12 @@ def process_row(row: pd.Series, api_key: str, skip_on_quota: bool, progress_bar,
     return extracted
 
 # ------------------ Main App ------------------
-api_key = st.text_input("🔑 Enter your Google Gemini API Key", type="password", 
-                        help="Get one free at https://aistudio.google.com/apikey")
+st.sidebar.header("Configuration")
+api_key = st.sidebar.text_input("🔑 Groq API Key", type="password", 
+                                help="Get free at https://console.groq.com")
+skip_on_quota = st.sidebar.checkbox("Skip URLs that fail due to quota limits", value=True)
+
 uploaded_file = st.file_uploader("📂 Upload Excel file", type=["xlsx", "xls"])
-skip_on_quota = st.checkbox("Skip URLs that fail due to quota limits", value=True)
 
 if api_key and uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -185,3 +184,6 @@ if api_key and uploaded_file:
         if skip_on_quota:
             st.info("ℹ️ URLs skipped due to quota are listed in 'quota_skipped.txt'. You can retry them later.")
         st.success("Processing complete!")
+else:
+    if not api_key:
+        st.info("👈 Please enter your Groq API key in the sidebar to begin.")
